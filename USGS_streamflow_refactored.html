@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USGS Streamflow Analyzer</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js for creating the chart -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* Custom animation for fading in results */
+        @keyframes fade-in {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+            animation: fade-in 0.5s ease-out forwards;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+
+    <div class="container mx-auto max-w-4xl my-8 p-6 md:p-8 bg-white rounded-2xl shadow-lg">
+
+        <!-- Header -->
+        <div class="text-center mb-6">
+            <h1 class="text-3xl sm:text-4xl font-bold text-gray-800">USGS Streamflow Analyzer</h1>
+            <p class="text-md text-gray-500 mt-2">Compare recent stream discharge to the last 10 years.</p>
+        </div>
+
+        <!-- Input Form -->
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+            <input type="text" id="gaugeNumberInput" value="12510500" placeholder="e.g., 12510500" class="w-full sm:w-64 p-3 border border-gray-300 rounded-lg text-center text-lg focus:ring-2 focus:ring-blue-500 focus:outline-none">
+            <button id="analyzeButton" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-lg text-lg shadow-md transition-transform transform hover:scale-105 disabled:bg-gray-400 disabled:cursor-wait">
+                Analyze Flow
+            </button>
+        </div>
+
+        <!-- Sample Gauges -->
+        <div class="text-center mt-4">
+            <p class="text-sm text-gray-600 mb-2">Or try a sample gauge:</p>
+            <div id="sampleGauges" class="flex justify-center gap-2 flex-wrap">
+                <button data-gauge="09380000" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-1 px-3 rounded-full transition-colors">Colorado River (Grand Canyon)</button>
+                <button data-gauge="07010000" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-1 px-3 rounded-full transition-colors">Mississippi River (St. Louis)</button>
+                <button data-gauge="14105700" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-1 px-3 rounded-full transition-colors">Columbia River (The Dalles)</button>
+            </div>
+        </div>
+        
+        <!-- Loading Spinner -->
+        <div id="loading" class="text-center my-6 hidden">
+             <p class="text-gray-500">Loading data...</p>
+        </div>
+
+        <!-- Error Display -->
+        <div id="error" class="my-6 p-4 bg-red-100 border-l-4 border-red-500 text-red-800 rounded-lg text-center hidden">
+            <p class="font-bold">Error</p>
+            <p id="errorMessage"></p>
+        </div>
+
+        <!-- Results Display -->
+        <div id="results" class="hidden animate-fade-in mt-8">
+            <!-- Gauge Name Header -->
+            <div class="text-center mb-6">
+                <h2 id="gaugeName" class="text-2xl font-bold text-gray-700"></h2>
+            </div>
+            <!-- Stats Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 md:gap-6 text-center mb-8">
+                <div class="bg-blue-50 p-4 rounded-lg shadow">
+                    <h3 class="text-sm font-semibold text-blue-800 uppercase">Most Recent Discharge</h3>
+                    <p id="statToday" class="text-3xl font-bold text-blue-900"></p>
+                    <p id="statDate" class="text-xs text-gray-500"></p>
+                </div>
+                <div class="bg-green-50 p-4 rounded-lg shadow">
+                    <h3 class="text-sm font-semibold text-green-800 uppercase">10-Year Mean (for this day)</h3>
+                    <p id="statMean" class="text-3xl font-bold text-green-900"></p>
+                </div>
+                <div class="bg-purple-50 p-4 rounded-lg shadow">
+                    <h3 class="text-sm font-semibold text-purple-800 uppercase">Percentile</h3>
+                    <p id="statPercentile" class="text-3xl font-bold text-purple-900"></p>
+                    <p id="statPercentileSub" class="text-xs text-gray-500"></p>
+                </div>
+            </div>
+
+            <!-- Chart -->
+            <div class="w-full h-80 md:h-96 bg-gray-50 p-4 rounded-lg shadow-inner">
+                <h3 id="chartTitle" class="text-lg font-semibold text-gray-700 text-center mb-4"></h3>
+                <canvas id="flowChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- DOM Element References ---
+        const gaugeInput = document.getElementById('gaugeNumberInput');
+        const analyzeButton = document.getElementById('analyzeButton');
+        const sampleGaugesContainer = document.getElementById('sampleGauges');
+        const errorContainer = document.getElementById('error');
+        const errorMessageEl = document.getElementById('errorMessage');
+        const resultsContainer = document.getElementById('results');
+        const loadingEl = document.getElementById('loading');
+        
+        const gaugeNameEl = document.getElementById('gaugeName');
+        const statTodayEl = document.getElementById('statToday');
+        const statDateEl = document.getElementById('statDate');
+        const statMeanEl = document.getElementById('statMean');
+        const statPercentileEl = document.getElementById('statPercentile');
+        const statPercentileSubEl = document.getElementById('statPercentileSub');
+        const chartTitleEl = document.getElementById('chartTitle');
+        const chartCanvas = document.getElementById('flowChart');
+        
+        let flowChart = null; // To hold the chart instance
+
+        // --- Data Fetching and Processing Logic ---
+        async function fetchData() {
+            const gaugeNumber = gaugeInput.value;
+            if (!gaugeNumber) {
+                showError("Please enter a USGS gauge number.");
+                return;
+            }
+
+            // --- UI State Management ---
+            setLoading(true);
+
+            // --- API Call ---
+            // Define the 10-year date range
+            const endDate = new Date();
+            const startDate = new Date();
+            startDate.setFullYear(endDate.getFullYear() - 10);
+            
+            const formatDate = (date) => date.toISOString().split('T')[0];
+            const startDateString = formatDate(startDate);
+            const endDateString = formatDate(endDate);
+            
+            const parameterCode = '00060'; // Discharge, cubic feet per second
+            const url = `https://waterservices.usgs.gov/nwis/dv/?format=json&sites=${gaugeNumber}&parameterCd=${parameterCode}&startDT=${startDateString}&endDT=${endDateString}`;
+
+            try {
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`API request failed with status: ${response.status}`);
+                }
+                const apiData = await response.json();
+                processAndRenderData(apiData);
+            } catch (err) {
+                console.error("Fetch or processing error:", err);
+                showError(`Failed to fetch or process data. ${err.message}`);
+            } finally {
+                setLoading(false);
+            }
+        }
+        
+        function processAndRenderData(apiData) {
+            if (!apiData?.value?.timeSeries?.[0]?.values?.[0]?.value) {
+                throw new Error("The API returned no valid data for this gauge. Please check the gauge number.");
+            }
+            
+            // --- Data Extraction and Processing ---
+            const siteName = apiData.value.timeSeries[0].sourceInfo.siteName;
+            const allValues = apiData.value.timeSeries[0].values[0].value;
+            const unit = apiData.value.timeSeries[0].variable.unit.unitCode;
+
+            const today = new Date();
+            const yesterday = new Date(today);
+            yesterday.setDate(today.getDate() - 1);
+
+            const todayString = today.toISOString().split('T')[0];
+            const yesterdayString = yesterday.toISOString().split('T')[0];
+            const monthDayForComparison = today.toISOString().substring(5, 10);
+
+            let mostRecentDataPoint = allValues.find(d => d.dateTime.startsWith(todayString));
+            let dateUsedForStat = todayString;
+
+            if (!mostRecentDataPoint) {
+                mostRecentDataPoint = allValues.find(d => d.dateTime.startsWith(yesterdayString));
+                dateUsedForStat = yesterdayString;
+            }
+            
+            if (!mostRecentDataPoint) {
+                 throw new Error(`No data available for today or yesterday. The gauge might not have reported recently.`);
+            }
+
+            const mostRecentDischarge = parseFloat(mostRecentDataPoint.value);
+            const historicalValues = allValues
+                .filter(d => d.dateTime.substring(5, 10) === monthDayForComparison && !d.dateTime.startsWith(dateUsedForStat))
+                .map(d => ({
+                    year: d.dateTime.substring(0, 4),
+                    discharge: parseFloat(d.value)
+                }));
+                
+            if (historicalValues.length === 0) {
+                throw new Error("No historical data could be found for this date to perform a comparison.");
+            }
+
+            const historicalDischarges = historicalValues.map(v => v.discharge);
+            const sum = historicalDischarges.reduce((a, b) => a + b, 0);
+            const mean = sum / historicalDischarges.length;
+            
+            const sortedHistorical = [...historicalDischarges].sort((a, b) => a - b);
+            const countBelow = sortedHistorical.filter(v => v < mostRecentDischarge).length;
+            const percentile = (countBelow / sortedHistorical.length) * 100;
+            
+            // --- Rendering Data to the DOM ---
+            gaugeNameEl.textContent = siteName;
+            statTodayEl.innerHTML = `${mostRecentDischarge.toLocaleString()}<span class="text-lg ml-1">${unit}</span>`;
+            statDateEl.textContent = `(${new Date(dateUsedForStat + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })})`;
+            statMeanEl.innerHTML = `${mean.toFixed(0).toLocaleString()}<span class="text-lg ml-1">${unit}</span>`;
+            statPercentileEl.innerHTML = `${percentile.toFixed(1)}<span class="text-lg">%</span>`;
+            statPercentileSubEl.textContent = `Higher than ${percentile.toFixed(0)}% of past flows`;
+            
+            // --- Charting ---
+            createChart(historicalValues, mostRecentDischarge, unit);
+        }
+
+        function createChart(data, recentValue, unit) {
+            // Destroy the old chart instance if it exists
+            if (flowChart) {
+                flowChart.destroy();
+            }
+
+            const labels = data.map(d => d.year);
+            const dischargeData = data.map(d => d.discharge);
+
+            chartTitleEl.textContent = `Historical Discharge for this Day (${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric' })})`;
+
+            const chartConfig = {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Historical Discharge',
+                        data: dischargeData,
+                        backgroundColor: '#8884d8',
+                        borderColor: '#6c67d0',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: ${context.parsed.y.toLocaleString()} ${unit}`;
+                                }
+                            }
+                        },
+                        annotation: {
+                           annotations: {
+                               line1: {
+                                   type: 'line',
+                                   yMin: recentValue,
+                                   yMax: recentValue,
+                                   borderColor: '#d63333',
+                                   borderWidth: 2,
+                                   borderDash: [6, 6],
+                                   label: {
+                                       content: `Recent: ${recentValue.toLocaleString()}`,
+                                       enabled: true,
+                                       position: 'end'
+                                   }
+                               }
+                           }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: `Discharge (${unit})`
+                            }
+                        }
+                    }
+                }
+            };
+            
+            // Re-import annotation plugin for Chart.js 4+ if it's missing
+            if (Chart.registry.plugins.get('annotation')) {
+                 flowChart = new Chart(chartCanvas, chartConfig);
+            } else {
+                // Fallback for environments where annotation plugin might not be loaded by default
+                // This will not show the reference line but prevents an error.
+                delete chartConfig.options.plugins.annotation;
+                 flowChart = new Chart(chartCanvas, chartConfig);
+            }
+        }
+        
+        // --- UI Helper Functions ---
+        function setLoading(isLoading) {
+            analyzeButton.disabled = isLoading;
+            analyzeButton.textContent = isLoading ? 'Loading...' : 'Analyze Flow';
+            if (isLoading) {
+                loadingEl.classList.remove('hidden');
+                resultsContainer.classList.add('hidden');
+                errorContainer.classList.add('hidden');
+            } else {
+                loadingEl.classList.add('hidden');
+                resultsContainer.classList.remove('hidden');
+            }
+        }
+
+        function showError(message) {
+            errorMessageEl.textContent = message;
+            errorContainer.classList.remove('hidden');
+            resultsContainer.classList.add('hidden');
+        }
+
+        // --- Event Listeners ---
+        analyzeButton.addEventListener('click', fetchData);
+        sampleGaugesContainer.addEventListener('click', (e) => {
+            if (e.target.tagName === 'BUTTON') {
+                gaugeInput.value = e.target.dataset.gauge;
+                fetchData();
+            }
+        });
+
+        // --- Initial Load ---
+        document.addEventListener('DOMContentLoaded', fetchData);
+
+    </script>
+</body>
+</html>
