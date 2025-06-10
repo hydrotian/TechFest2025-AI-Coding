@@ -1,3 +1,6 @@
+# Problem 1 from Project Euler
+
+
 # prompt used for Cline: Please develop a script that 
 # 1. find all the natural numbers bellow 1000 that are multiples of 3 or 5
 # 2. sum of these multiples
